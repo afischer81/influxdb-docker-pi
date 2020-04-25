@@ -1,0 +1,8 @@
+
+CREATE USER "iobroker" WITH PASSWORD 'iobroker'
+CREATE DATABASE "iobroker"
+GRANT ALL ON "iobroker" TO "iobroker"
+
+CREATE USER "prometheus" WITH PASSWORD 'prometheus'
+CREATE DATABASE "prometheus"
+GRANT ALL ON "prometheus" TO "prometheus"
