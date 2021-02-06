@@ -1,9 +1,15 @@
 #!/bin/bash
 
+IMAGE=influxdb
+#IMAGE2=influxdb-timeshift-proxy
 INFLUXDB_DATA_DIR=/data/influxdb
+BACKUP_DIR=/data/backup/raspi1/influxdb
 
 function do_build {
-    docker pull influxdb
+    docker pull ${IMAGE}
+    #cd image
+    #docker build -t ${IMAGE2} .
+    #cd -
 }
 
 function do_init {
@@ -19,7 +25,7 @@ function do_init {
         -e INFLUXDB_ADMIN_PASSWORD=admin123 \
         -v /var/lib/influxdb:/var/lib/influxdb \
         -v /etc/influxdb/scripts:/docker-entrypoint-initdb.d \
-        influxdb /init-influxdb.sh
+        ${IMAGE} /init-influxdb.sh
     sudo rm -fr /var/lib/influxdb
     if [ -d ${INFLUXDB_DATA_DIR} ]
     then
@@ -34,7 +40,7 @@ function do_init {
         -e INFLUXDB_ADMIN_PASSWORD=admin123 \
         -v ${INFLUXDB_DATA_DIR}:/var/lib/influxdb \
         -v /etc/influxdb/scripts:/docker-entrypoint-initdb.d \
-        influxdb /init-influxdb.sh
+        ${IMAGE} /init-influxdb.sh
     sudo chown -R influxdb:influxdb ${INFLUXDB_DATA_DIR}
 }
 
@@ -43,22 +49,70 @@ function do_run {
     INFLUX_GID=$(grep influxdb /etc/group | cut -d: -f3)
     docker run \
         -d \
+        --restart unless-stopped \
         -p 8086:8086 \
         --user ${INFLUX_UID}:${INFLUX_GID} \
         --name=influxdb \
-        --restart unless-stopped \
         -v /etc/influxdb/influxdb.conf:/etc/influxdb/influxdb.conf \
         -v ${INFLUXDB_DATA_DIR}:/var/lib/influxdb \
-        influxdb \
+        ${IMAGE} \
         -config /etc/influxdb/influxdb.conf
 }
 
+function do_reset {
+    docker rm -f influxdb
+    sudo rm -fr ${INFLUXDB_DATA_DIR}
+}
+
+function do_backup {
+    for db in iobroker solaredge
+    do
+        docker exec influxdb influxd backup -portable -database ${db} -host 127.0.0.1:8088 /var/lib/influxdb
+        if [ ! -d ${BACKUP_DIR}/${db} ]
+        then
+            sudo mkdir -p -m 755 ${BACKUP_DIR}/${db}
+        fi
+        sudo mv ${INFLUXDB_DATA_DIR}/$(date +'%Y%m%d')*.* ${BACKUP_DIR}/${db}
+        sudo chmod 644 ${BACKUP_DIR}/${db}/$(date +'%Y%m%d')*.*
+    done
+}
+
+function do_backup_full {
+    timestamp=$(date +'%Y%m%d')
+    docker exec influxdb influxd backup -portable -host 127.0.0.1:8088 /var/lib/influxdb
+    sudo rm -f ${BACKUP_DIR}/influxdb_full.tar
+    (cd ${INFLUXDB_DATA_DIR}; sudo tar -c -f ${BACKUP_DIR}/influxdb_${timestamp}.tar --no-recursion ${timestamp}*.*)
+    sudo rm -f ${INFLUXDB_DATA_DIR}/${timestamp}*.*
+}
+
+function do_restore {
+    backup=$1
+    sudo tar -C ${INFLUXDB_DATA_DIR} -x -f ${backup}
+    docker exec influxdb influxd restore -portable -host 127.0.0.1:8088 /var/lib/influxdb
+    sudo rm -f ${INFLUXDB_DATA_DIR}/[0-9]*T[0-9]*.*
+}
+
 function do_exec {
-    docker exec influxdb /usr/bin/influx -execute "$*"
+    #
+    # NOTE: be aware of quotes!
+    #
+    # e.g. create iobroker database
+    #
+    # ./install.sh exec CREATE USER \"iobroker\" WITH PASSWORD \'iobroker\'
+    # ./install.sh exec CREATE DATABASE \"iobroker\"
+    # ./install.sh exec GRANT ALL ON \"iobroker\" TO \"iobroker\"
+    #
+    db=$1
+    shift
+    docker exec influxdb /usr/bin/influx -database $db -execute "$*"
 }
 
 function do_info {
     docker exec influxdb /usr/bin/influx -execute 'SHOW USERS; SHOW DATABASES'
+}
+
+function do_metrics {
+    curl -G http://localhost:8086/metrics
 }
 
 function do_shell {
